@@ -10,6 +10,7 @@ import {
 import {
     KripsolCloud,
     KripsolCloudError,
+    type KripsolPool,
 } from "./lib/kripsolCloud";
 
 class Kripsol extends utils.Adapter {
@@ -53,7 +54,6 @@ class Kripsol extends utils.Adapter {
             const pools = await this.cloud.getPools();
 
             if (pools.length === 0) {
-                await this.setStateAsync("info.connection", false, true);
                 this.log.warn(
                     "Authentication succeeded, but no pools are assigned to this account.",
                 );
@@ -61,11 +61,13 @@ class Kripsol extends utils.Adapter {
             }
 
             for (const pool of pools) {
-                this.log.info(`Found pool "${pool.name}" with ID ${pool.id}`);
+                await this.readAndLogPoolData(pool);
             }
 
             await this.setStateAsync("info.connection", true, true);
-            this.log.info(`Pool discovery completed. Found ${pools.length} pool(s).`);
+            this.log.info(
+                `Pool data retrieval completed for ${pools.length} pool(s).`,
+            );
         } catch (error) {
             await this.setStateAsync("info.connection", false, true);
 
@@ -80,6 +82,29 @@ class Kripsol extends utils.Adapter {
                 );
             }
         }
+    }
+
+    private async readAndLogPoolData(pool: KripsolPool): Promise<void> {
+        if (!this.cloud) {
+            throw new KripsolCloudError(
+                "Kripsol cloud client is not initialized.",
+            );
+        }
+
+        this.log.info(`Reading data for pool "${pool.name}" (${pool.id}) ...`);
+
+        const poolData = await this.cloud.fetchPoolData(pool.id);
+        const topLevelKeys = Object.keys(poolData).sort();
+
+        this.log.info(
+            `Received pool data for "${pool.name}": ` +
+                `${topLevelKeys.length} top-level field(s): ${topLevelKeys.join(", ")}`,
+        );
+
+        this.log.debug(
+            `Complete pool data for "${pool.name}" (${pool.id}): ` +
+                JSON.stringify(poolData),
+        );
     }
 
     private onStateChange(
