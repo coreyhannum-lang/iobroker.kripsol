@@ -1,0 +1,28 @@
+{
+  "i18n": true,
+  "type": "panel",
+  "items": {
+    "username": {
+      "type": "text",
+      "label": "Cloud username",
+      "help": "Email address used for the Kripsol/VistaPool cloud account",
+      "newLine": true,
+      "xs": 12,
+      "sm": 12,
+      "md": 6,
+      "lg": 6,
+      "xl": 4
+    },
+    "password": {
+      "type": "password",
+      "label": "Cloud password",
+      "help": "Password used for the Kripsol/VistaPool cloud account",
+      "newLine": true,
+      "xs": 12,
+      "sm": 12,
+      "md": 6,
+      "lg": 6,
+      "xl": 4
+    }
+  }
+}

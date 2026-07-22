@@ -1,0 +1,113 @@
+{
+	"common": {
+		"name": "kripsol",
+		"version": "0.0.1",
+		"news": {
+			"0.0.1": {
+				"en": "initial release",
+				"de": "Erstveröffentlichung",
+				"ru": "Начальная версия",
+				"pt": "lançamento inicial",
+				"nl": "Eerste uitgave",
+				"fr": "Première version",
+				"it": "Versione iniziale",
+				"es": "Versión inicial",
+				"pl": "Pierwsze wydanie",
+				"uk": "Початкова версія",
+				"zh-cn": "首次出版"
+			}
+		},
+		"titleLang": {
+			"en": "Kripsol",
+			"de": "Kripsol",
+			"ru": "Крипсол",
+			"pt": "Cripsol",
+			"nl": "Kripsol",
+			"fr": "Kripsol",
+			"it": "Kripsol",
+			"es": "cripsol",
+			"pl": "Kripsol",
+			"uk": "Крипсол",
+			"zh-cn": "克里普索尔"
+		},
+		"desc": {
+			"en": "Connects Kripsol and VistaPool cloud connected pool contollers to ioBroker",
+			"de": "Verbindet über die Cloud angeschlossene Poolsteuerungen von Kripsol und VistaPool mit ioBroker",
+			"ru": "Подключает контроллеры пулов Kripsol и VistaPool, подключенные к облаку, к ioBroker.",
+			"pt": "Conecta controladores de pool conectados à nuvem Kripsol e VistaPool ao ioBroker",
+			"nl": "Verbindt Kripsol en VistaPool cloud-verbonden poolcontrollers met ioBroker",
+			"fr": "Connecte les contrôleurs de piscine connectés au cloud Kripsol et VistaPool à ioBroker",
+			"it": "Collega i controllori di pool connessi al cloud Kripsol e VistaPool a ioBroker",
+			"es": "Conecta los controladores de piscinas conectados a la nube Kripsol y VistaPool a ioBroker",
+			"pl": "Łączy kontrolery basenów Kripsol i VistaPool połączone z chmurą z ioBroker",
+			"uk": "Підключає до ioBroker підключені до хмари контролери пулу Kripsol і VistaPool",
+			"zh-cn": "将 Kripsol 和 VistaPool 云连接池控制器连接到 ioBroker"
+		},
+		"authors": [
+			"Katzenhausen <corey.hannum@yahoo.de>"
+		],
+		"keywords": [
+			"Pool",
+			"WLAN",
+			"Kripsol",
+			"VistaPool"
+		],
+		"licenseInformation": {
+			"type": "free",
+			"license": "MIT"
+		},
+		"platform": "Javascript/Node.js",
+		"icon": "kripsol.png",
+		"enabled": true,
+		"extIcon": "https://raw.githubusercontent.com/coreyhannum-lang/ioBroker.kripsol/main/admin/kripsol.png",
+		"readme": "https://github.com/coreyhannum-lang/ioBroker.kripsol/blob/main/README.md",
+		"loglevel": "info",
+		"tier": 3,
+		"mode": "daemon",
+		"type": "garden",
+		"compact": true,
+		"connectionType": "cloud",
+		"dataSource": "poll",
+		"adminUI": {
+			"config": "json"
+		},
+		"dependencies": [
+			{
+				"js-controller": ">=6.0.11"
+			}
+		],
+		"globalDependencies": [
+			{
+				"admin": ">=7.0.23"
+			}
+		]
+	},
+	"native": {
+		"username": "",
+		"password": ""
+	},
+	"objects": [],
+	"instanceObjects": [
+		{
+			"_id": "info",
+			"type": "channel",
+			"common": {
+				"name": "Information"
+			},
+			"native": {}
+		},
+		{
+			"_id": "info.connection",
+			"type": "state",
+			"common": {
+				"role": "indicator.connected",
+				"name": "Device or service connected",
+				"type": "boolean",
+				"read": true,
+				"write": false,
+				"def": false
+			},
+			"native": {}
+		}
+	]
+}
