@@ -7,9 +7,14 @@ import {
     KripsolAuth,
     KripsolAuthenticationError,
 } from "./lib/kripsolAuth";
+import {
+    KripsolCloud,
+    KripsolCloudError,
+} from "./lib/kripsolCloud";
 
 class Kripsol extends utils.Adapter {
     private auth: KripsolAuth | null = null;
+    private cloud: KripsolCloud | null = null;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
@@ -36,22 +41,42 @@ class Kripsol extends utils.Adapter {
         }
 
         this.auth = new KripsolAuth(username, password);
+        this.cloud = new KripsolCloud(this.auth);
 
         try {
             const tokens = await this.auth.authenticate();
 
-            await this.setStateAsync("info.connection", true, true);
             this.log.info(
                 `Successfully authenticated with the Kripsol cloud. User ID: ${tokens.userId}`,
             );
+
+            const pools = await this.cloud.getPools();
+
+            if (pools.length === 0) {
+                await this.setStateAsync("info.connection", false, true);
+                this.log.warn(
+                    "Authentication succeeded, but no pools are assigned to this account.",
+                );
+                return;
+            }
+
+            for (const pool of pools) {
+                this.log.info(`Found pool "${pool.name}" with ID ${pool.id}`);
+            }
+
+            await this.setStateAsync("info.connection", true, true);
+            this.log.info(`Pool discovery completed. Found ${pools.length} pool(s).`);
         } catch (error) {
             await this.setStateAsync("info.connection", false, true);
 
-            if (error instanceof KripsolAuthenticationError) {
+            if (
+                error instanceof KripsolAuthenticationError ||
+                error instanceof KripsolCloudError
+            ) {
                 this.log.error(error.message);
             } else {
                 this.log.error(
-                    `Unexpected error during cloud login: ${(error as Error).message}`,
+                    `Unexpected error during cloud initialization: ${(error as Error).message}`,
                 );
             }
         }
@@ -67,6 +92,7 @@ class Kripsol extends utils.Adapter {
     }
 
     private onUnload(callback: () => void): void {
+        this.cloud = null;
         this.auth = null;
         this.setState("info.connection", false, true, () => callback());
     }

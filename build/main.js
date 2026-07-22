@@ -23,8 +23,10 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var utils = __toESM(require("@iobroker/adapter-core"));
 var import_kripsolAuth = require("./lib/kripsolAuth");
+var import_kripsolCloud = require("./lib/kripsolCloud");
 class Kripsol extends utils.Adapter {
   auth = null;
+  cloud = null;
   constructor(options = {}) {
     super({
       ...options,
@@ -46,19 +48,32 @@ class Kripsol extends utils.Adapter {
       return;
     }
     this.auth = new import_kripsolAuth.KripsolAuth(username, password);
+    this.cloud = new import_kripsolCloud.KripsolCloud(this.auth);
     try {
       const tokens = await this.auth.authenticate();
-      await this.setStateAsync("info.connection", true, true);
       this.log.info(
         `Successfully authenticated with the Kripsol cloud. User ID: ${tokens.userId}`
       );
+      const pools = await this.cloud.getPools();
+      if (pools.length === 0) {
+        await this.setStateAsync("info.connection", false, true);
+        this.log.warn(
+          "Authentication succeeded, but no pools are assigned to this account."
+        );
+        return;
+      }
+      for (const pool of pools) {
+        this.log.info(`Found pool "${pool.name}" with ID ${pool.id}`);
+      }
+      await this.setStateAsync("info.connection", true, true);
+      this.log.info(`Pool discovery completed. Found ${pools.length} pool(s).`);
     } catch (error) {
       await this.setStateAsync("info.connection", false, true);
-      if (error instanceof import_kripsolAuth.KripsolAuthenticationError) {
+      if (error instanceof import_kripsolAuth.KripsolAuthenticationError || error instanceof import_kripsolCloud.KripsolCloudError) {
         this.log.error(error.message);
       } else {
         this.log.error(
-          `Unexpected error during cloud login: ${error.message}`
+          `Unexpected error during cloud initialization: ${error.message}`
         );
       }
     }
@@ -69,6 +84,7 @@ class Kripsol extends utils.Adapter {
     }
   }
   onUnload(callback) {
+    this.cloud = null;
     this.auth = null;
     this.setState("info.connection", false, true, () => callback());
   }
