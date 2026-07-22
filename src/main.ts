@@ -12,10 +12,12 @@ import {
     KripsolCloudError,
     type KripsolPool,
 } from "./lib/kripsolCloud";
+import { PoolStateWriter } from "./lib/poolStateWriter";
 
 class Kripsol extends utils.Adapter {
     private auth: KripsolAuth | null = null;
     private cloud: KripsolCloud | null = null;
+    private stateWriter: PoolStateWriter | null = null;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
@@ -43,6 +45,7 @@ class Kripsol extends utils.Adapter {
 
         this.auth = new KripsolAuth(username, password);
         this.cloud = new KripsolCloud(this.auth);
+        this.stateWriter = new PoolStateWriter(this);
 
         try {
             const tokens = await this.auth.authenticate();
@@ -61,7 +64,7 @@ class Kripsol extends utils.Adapter {
             }
 
             for (const pool of pools) {
-                await this.readAndLogPoolData(pool);
+                await this.readAndStorePoolData(pool);
             }
 
             await this.setStateAsync("info.connection", true, true);
@@ -84,8 +87,8 @@ class Kripsol extends utils.Adapter {
         }
     }
 
-    private async readAndLogPoolData(pool: KripsolPool): Promise<void> {
-        if (!this.cloud) {
+    private async readAndStorePoolData(pool: KripsolPool): Promise<void> {
+        if (!this.cloud || !this.stateWriter) {
             throw new KripsolCloudError(
                 "Kripsol cloud client is not initialized.",
             );
@@ -99,6 +102,12 @@ class Kripsol extends utils.Adapter {
         this.log.info(
             `Received pool data for "${pool.name}": ` +
                 `${topLevelKeys.length} top-level field(s): ${topLevelKeys.join(", ")}`,
+        );
+
+        const stateCount = await this.stateWriter.writePool(pool, poolData);
+
+        this.log.info(
+            `Created or updated ${stateCount} state(s) for pool "${pool.name}".`,
         );
 
         this.log.debug(
@@ -117,6 +126,7 @@ class Kripsol extends utils.Adapter {
     }
 
     private onUnload(callback: () => void): void {
+        this.stateWriter = null;
         this.cloud = null;
         this.auth = null;
         this.setState("info.connection", false, true, () => callback());

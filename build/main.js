@@ -24,9 +24,11 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var utils = __toESM(require("@iobroker/adapter-core"));
 var import_kripsolAuth = require("./lib/kripsolAuth");
 var import_kripsolCloud = require("./lib/kripsolCloud");
+var import_poolStateWriter = require("./lib/poolStateWriter");
 class Kripsol extends utils.Adapter {
   auth = null;
   cloud = null;
+  stateWriter = null;
   constructor(options = {}) {
     super({
       ...options,
@@ -49,6 +51,7 @@ class Kripsol extends utils.Adapter {
     }
     this.auth = new import_kripsolAuth.KripsolAuth(username, password);
     this.cloud = new import_kripsolCloud.KripsolCloud(this.auth);
+    this.stateWriter = new import_poolStateWriter.PoolStateWriter(this);
     try {
       const tokens = await this.auth.authenticate();
       this.log.info(
@@ -62,7 +65,7 @@ class Kripsol extends utils.Adapter {
         return;
       }
       for (const pool of pools) {
-        await this.readAndLogPoolData(pool);
+        await this.readAndStorePoolData(pool);
       }
       await this.setStateAsync("info.connection", true, true);
       this.log.info(
@@ -79,8 +82,8 @@ class Kripsol extends utils.Adapter {
       }
     }
   }
-  async readAndLogPoolData(pool) {
-    if (!this.cloud) {
+  async readAndStorePoolData(pool) {
+    if (!this.cloud || !this.stateWriter) {
       throw new import_kripsolCloud.KripsolCloudError(
         "Kripsol cloud client is not initialized."
       );
@@ -90,6 +93,10 @@ class Kripsol extends utils.Adapter {
     const topLevelKeys = Object.keys(poolData).sort();
     this.log.info(
       `Received pool data for "${pool.name}": ${topLevelKeys.length} top-level field(s): ${topLevelKeys.join(", ")}`
+    );
+    const stateCount = await this.stateWriter.writePool(pool, poolData);
+    this.log.info(
+      `Created or updated ${stateCount} state(s) for pool "${pool.name}".`
     );
     this.log.debug(
       `Complete pool data for "${pool.name}" (${pool.id}): ` + JSON.stringify(poolData)
@@ -101,6 +108,7 @@ class Kripsol extends utils.Adapter {
     }
   }
   onUnload(callback) {
+    this.stateWriter = null;
     this.cloud = null;
     this.auth = null;
     this.setState("info.connection", false, true, () => callback());
