@@ -25,10 +25,13 @@ var utils = __toESM(require("@iobroker/adapter-core"));
 var import_kripsolAuth = require("./lib/kripsolAuth");
 var import_kripsolCloud = require("./lib/kripsolCloud");
 var import_poolStateWriter = require("./lib/poolStateWriter");
+var import_pollingService = require("./lib/pollingService");
+const POLLING_INTERVAL_MS = 3e4;
 class Kripsol extends utils.Adapter {
   auth = null;
   cloud = null;
   stateWriter = null;
+  pollingService = null;
   constructor(options = {}) {
     super({
       ...options,
@@ -64,12 +67,16 @@ class Kripsol extends utils.Adapter {
         );
         return;
       }
-      for (const pool of pools) {
-        await this.readAndStorePoolData(pool);
-      }
-      await this.setStateAsync("info.connection", true, true);
+      this.pollingService = new import_pollingService.PollingService(
+        this,
+        this.cloud,
+        this.stateWriter,
+        pools,
+        POLLING_INTERVAL_MS
+      );
+      await this.pollingService.start();
       this.log.info(
-        `Pool data retrieval completed for ${pools.length} pool(s).`
+        `Continuous pool-data polling is active for ${pools.length} pool(s).`
       );
     } catch (error) {
       await this.setStateAsync("info.connection", false, true);
@@ -82,32 +89,15 @@ class Kripsol extends utils.Adapter {
       }
     }
   }
-  async readAndStorePoolData(pool) {
-    if (!this.cloud || !this.stateWriter) {
-      throw new import_kripsolCloud.KripsolCloudError(
-        "Kripsol cloud client is not initialized."
-      );
-    }
-    this.log.info(`Reading data for pool "${pool.name}" (${pool.id}) ...`);
-    const poolData = await this.cloud.fetchPoolData(pool.id);
-    const topLevelKeys = Object.keys(poolData).sort();
-    this.log.info(
-      `Received pool data for "${pool.name}": ${topLevelKeys.length} top-level field(s): ${topLevelKeys.join(", ")}`
-    );
-    const stateCount = await this.stateWriter.writePool(pool, poolData);
-    this.log.info(
-      `Created or updated ${stateCount} state(s) for pool "${pool.name}".`
-    );
-    this.log.debug(
-      `Complete pool data for "${pool.name}" (${pool.id}): ` + JSON.stringify(poolData)
-    );
-  }
   onStateChange(id, state) {
     if (state && !state.ack) {
       this.log.debug(`Ignoring unsupported command for ${id}.`);
     }
   }
   onUnload(callback) {
+    var _a;
+    (_a = this.pollingService) == null ? void 0 : _a.stop();
+    this.pollingService = null;
     this.stateWriter = null;
     this.cloud = null;
     this.auth = null;

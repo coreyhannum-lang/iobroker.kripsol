@@ -1,6 +1,6 @@
 {
   "name": "iobroker.kripsol",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Connects Kripsol and VistaPool cloud connected pool contollers to ioBroker",
   "author": {
     "name": "Katzenhausen",

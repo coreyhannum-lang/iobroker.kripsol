@@ -49,39 +49,58 @@ class PoolStateWriter {
     const poolRoot = `pools.${poolId}`;
     await this.ensureChannel("pools", "Pools");
     await this.ensureChannel(poolRoot, pool.name);
-    let stateCount = 0;
-    await this.writeState(`${poolRoot}.name`, "Pool name", pool.name);
-    stateCount++;
-    await this.writeState(`${poolRoot}.cloudId`, "Cloud pool ID", pool.id);
-    stateCount++;
+    let changedStateCount = 0;
+    changedStateCount += await this.writeState(
+      `${poolRoot}.name`,
+      "Pool name",
+      pool.name
+    );
+    changedStateCount += await this.writeState(
+      `${poolRoot}.cloudId`,
+      "Cloud pool ID",
+      pool.id
+    );
     const dataRoot = `${poolRoot}.data`;
     await this.ensureChannel(dataRoot, "Cloud data");
-    stateCount += await this.writeValue(dataRoot, poolData);
-    return stateCount;
+    changedStateCount += await this.writeValue(dataRoot, poolData);
+    return changedStateCount;
   }
   async writeValue(path, value) {
     if (this.isRecord(value)) {
-      let count = 0;
+      let changedStateCount = 0;
       for (const [key, childValue] of Object.entries(value)) {
         const childId = this.sanitizeIdPart(key);
         const childPath = `${path}.${childId}`;
         if (this.isRecord(childValue)) {
           await this.ensureChannel(childPath, this.humanizeKey(key));
-          count += await this.writeValue(childPath, childValue);
+          changedStateCount += await this.writeValue(
+            childPath,
+            childValue
+          );
           continue;
         }
         if (Array.isArray(childValue)) {
-          await this.writeState(childPath, this.humanizeKey(key), JSON.stringify(childValue), "json");
-          count++;
+          changedStateCount += await this.writeState(
+            childPath,
+            this.humanizeKey(key),
+            JSON.stringify(childValue),
+            "json"
+          );
           continue;
         }
-        await this.writeState(childPath, this.humanizeKey(key), childValue);
-        count++;
+        changedStateCount += await this.writeState(
+          childPath,
+          this.humanizeKey(key),
+          childValue
+        );
       }
-      return count;
+      return changedStateCount;
     }
-    await this.writeState(path, this.humanizeKey(this.getLastPathPart(path)), value);
-    return 1;
+    return this.writeState(
+      path,
+      this.humanizeKey(this.getLastPathPart(path)),
+      value
+    );
   }
   async ensureChannel(id, name) {
     await this.adapter.extendObjectAsync(id, {
@@ -106,7 +125,12 @@ class PoolStateWriter {
       },
       native: {}
     });
+    const currentState = await this.adapter.getStateAsync(id);
+    if (currentState && this.valuesEqual(currentState.val, definition.value)) {
+      return 0;
+    }
     await this.adapter.setStateAsync(id, definition.value, true);
+    return 1;
   }
   getStateDefinition(id, value, forcedRole) {
     var _a, _b;
@@ -133,11 +157,20 @@ class PoolStateWriter {
     if (value === null || value === void 0) {
       return { type: "string", role: "json", value: "null" };
     }
-    return { type: "string", role: "json", value: JSON.stringify(value) };
+    return {
+      type: "string",
+      role: "json",
+      value: JSON.stringify(value)
+    };
+  }
+  valuesEqual(currentValue, newValue) {
+    return currentValue === newValue;
   }
   findMetadata(id) {
     const normalized = id.replace(/^pools\.[^.]+\.data\./, "");
-    return METADATA_RULES.find((rule) => rule.pattern.test(normalized));
+    return METADATA_RULES.find(
+      (rule) => rule.pattern.test(normalized)
+    );
   }
   humanizeKey(key) {
     const result = key.replace(/[_-]+/g, " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2").trim();

@@ -40,31 +40,40 @@ const METADATA_RULES: MetadataRule[] = [
 export class PoolStateWriter {
     public constructor(private readonly adapter: utils.AdapterInstance) {}
 
-    public async writePool(pool: KripsolPool, poolData: JsonRecord): Promise<number> {
+    public async writePool(
+        pool: KripsolPool,
+        poolData: JsonRecord,
+    ): Promise<number> {
         const poolId = this.sanitizeIdPart(pool.id);
         const poolRoot = `pools.${poolId}`;
 
         await this.ensureChannel("pools", "Pools");
         await this.ensureChannel(poolRoot, pool.name);
 
-        let stateCount = 0;
+        let changedStateCount = 0;
 
-        await this.writeState(`${poolRoot}.name`, "Pool name", pool.name);
-        stateCount++;
+        changedStateCount += await this.writeState(
+            `${poolRoot}.name`,
+            "Pool name",
+            pool.name,
+        );
 
-        await this.writeState(`${poolRoot}.cloudId`, "Cloud pool ID", pool.id);
-        stateCount++;
+        changedStateCount += await this.writeState(
+            `${poolRoot}.cloudId`,
+            "Cloud pool ID",
+            pool.id,
+        );
 
         const dataRoot = `${poolRoot}.data`;
         await this.ensureChannel(dataRoot, "Cloud data");
-        stateCount += await this.writeValue(dataRoot, poolData);
+        changedStateCount += await this.writeValue(dataRoot, poolData);
 
-        return stateCount;
+        return changedStateCount;
     }
 
     private async writeValue(path: string, value: unknown): Promise<number> {
         if (this.isRecord(value)) {
-            let count = 0;
+            let changedStateCount = 0;
 
             for (const [key, childValue] of Object.entries(value)) {
                 const childId = this.sanitizeIdPart(key);
@@ -72,25 +81,38 @@ export class PoolStateWriter {
 
                 if (this.isRecord(childValue)) {
                     await this.ensureChannel(childPath, this.humanizeKey(key));
-                    count += await this.writeValue(childPath, childValue);
+                    changedStateCount += await this.writeValue(
+                        childPath,
+                        childValue,
+                    );
                     continue;
                 }
 
                 if (Array.isArray(childValue)) {
-                    await this.writeState(childPath, this.humanizeKey(key), JSON.stringify(childValue), "json");
-                    count++;
+                    changedStateCount += await this.writeState(
+                        childPath,
+                        this.humanizeKey(key),
+                        JSON.stringify(childValue),
+                        "json",
+                    );
                     continue;
                 }
 
-                await this.writeState(childPath, this.humanizeKey(key), childValue);
-                count++;
+                changedStateCount += await this.writeState(
+                    childPath,
+                    this.humanizeKey(key),
+                    childValue,
+                );
             }
 
-            return count;
+            return changedStateCount;
         }
 
-        await this.writeState(path, this.humanizeKey(this.getLastPathPart(path)), value);
-        return 1;
+        return this.writeState(
+            path,
+            this.humanizeKey(this.getLastPathPart(path)),
+            value,
+        );
     }
 
     private async ensureChannel(id: string, name: string): Promise<void> {
@@ -101,7 +123,12 @@ export class PoolStateWriter {
         });
     }
 
-    private async writeState(id: string, fallbackName: string, value: unknown, forcedRole?: string): Promise<void> {
+    private async writeState(
+        id: string,
+        fallbackName: string,
+        value: unknown,
+        forcedRole?: string,
+    ): Promise<number> {
         const definition = this.getStateDefinition(id, value, forcedRole);
         const metadata = this.findMetadata(id);
 
@@ -118,15 +145,32 @@ export class PoolStateWriter {
             native: {},
         });
 
+        const currentState = await this.adapter.getStateAsync(id);
+
+        if (
+            currentState &&
+            this.valuesEqual(currentState.val, definition.value)
+        ) {
+            return 0;
+        }
+
         await this.adapter.setStateAsync(id, definition.value, true);
+        return 1;
     }
 
-    private getStateDefinition(id: string, value: unknown, forcedRole?: string): StateDefinition {
+    private getStateDefinition(
+        id: string,
+        value: unknown,
+        forcedRole?: string,
+    ): StateDefinition {
         if (forcedRole === "json") {
             return {
                 type: "string",
                 role: "json",
-                value: typeof value === "string" ? value : JSON.stringify(value),
+                value:
+                    typeof value === "string"
+                        ? value
+                        : JSON.stringify(value),
             };
         }
 
@@ -150,12 +194,25 @@ export class PoolStateWriter {
             return { type: "string", role: "json", value: "null" };
         }
 
-        return { type: "string", role: "json", value: JSON.stringify(value) };
+        return {
+            type: "string",
+            role: "json",
+            value: JSON.stringify(value),
+        };
+    }
+
+    private valuesEqual(
+        currentValue: ioBroker.StateValue,
+        newValue: string | number | boolean,
+    ): boolean {
+        return currentValue === newValue;
     }
 
     private findMetadata(id: string): MetadataRule | undefined {
         const normalized = id.replace(/^pools\.[^.]+\.data\./, "");
-        return METADATA_RULES.find((rule) => rule.pattern.test(normalized));
+        return METADATA_RULES.find((rule) =>
+            rule.pattern.test(normalized),
+        );
     }
 
     private humanizeKey(key: string): string {
@@ -164,7 +221,9 @@ export class PoolStateWriter {
             .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
             .trim();
 
-        return result ? result.charAt(0).toUpperCase() + result.slice(1) : "Unnamed";
+        return result
+            ? result.charAt(0).toUpperCase() + result.slice(1)
+            : "Unnamed";
     }
 
     private sanitizeIdPart(value: string): string {
@@ -181,6 +240,10 @@ export class PoolStateWriter {
     }
 
     private isRecord(value: unknown): value is JsonRecord {
-        return typeof value === "object" && value !== null && !Array.isArray(value);
+        return (
+            typeof value === "object" &&
+            value !== null &&
+            !Array.isArray(value)
+        );
     }
 }

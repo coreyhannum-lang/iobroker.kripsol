@@ -10,14 +10,17 @@ import {
 import {
     KripsolCloud,
     KripsolCloudError,
-    type KripsolPool,
 } from "./lib/kripsolCloud";
 import { PoolStateWriter } from "./lib/poolStateWriter";
+import { PollingService } from "./lib/pollingService";
+
+const POLLING_INTERVAL_MS = 30_000;
 
 class Kripsol extends utils.Adapter {
     private auth: KripsolAuth | null = null;
     private cloud: KripsolCloud | null = null;
     private stateWriter: PoolStateWriter | null = null;
+    private pollingService: PollingService | null = null;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
@@ -63,13 +66,18 @@ class Kripsol extends utils.Adapter {
                 return;
             }
 
-            for (const pool of pools) {
-                await this.readAndStorePoolData(pool);
-            }
+            this.pollingService = new PollingService(
+                this,
+                this.cloud,
+                this.stateWriter,
+                pools,
+                POLLING_INTERVAL_MS,
+            );
 
-            await this.setStateAsync("info.connection", true, true);
+            await this.pollingService.start();
+
             this.log.info(
-                `Pool data retrieval completed for ${pools.length} pool(s).`,
+                `Continuous pool-data polling is active for ${pools.length} pool(s).`,
             );
         } catch (error) {
             await this.setStateAsync("info.connection", false, true);
@@ -87,35 +95,6 @@ class Kripsol extends utils.Adapter {
         }
     }
 
-    private async readAndStorePoolData(pool: KripsolPool): Promise<void> {
-        if (!this.cloud || !this.stateWriter) {
-            throw new KripsolCloudError(
-                "Kripsol cloud client is not initialized.",
-            );
-        }
-
-        this.log.info(`Reading data for pool "${pool.name}" (${pool.id}) ...`);
-
-        const poolData = await this.cloud.fetchPoolData(pool.id);
-        const topLevelKeys = Object.keys(poolData).sort();
-
-        this.log.info(
-            `Received pool data for "${pool.name}": ` +
-                `${topLevelKeys.length} top-level field(s): ${topLevelKeys.join(", ")}`,
-        );
-
-        const stateCount = await this.stateWriter.writePool(pool, poolData);
-
-        this.log.info(
-            `Created or updated ${stateCount} state(s) for pool "${pool.name}".`,
-        );
-
-        this.log.debug(
-            `Complete pool data for "${pool.name}" (${pool.id}): ` +
-                JSON.stringify(poolData),
-        );
-    }
-
     private onStateChange(
         id: string,
         state: ioBroker.State | null | undefined,
@@ -126,9 +105,12 @@ class Kripsol extends utils.Adapter {
     }
 
     private onUnload(callback: () => void): void {
+        this.pollingService?.stop();
+        this.pollingService = null;
         this.stateWriter = null;
         this.cloud = null;
         this.auth = null;
+
         this.setState("info.connection", false, true, () => callback());
     }
 }
