@@ -19,6 +19,9 @@ export class PollingService {
             return;
         }
 
+        await this.adapter.setStateAsync("info.pollingActive", true, true);
+        await this.adapter.setStateAsync("info.lastError", "", true);
+
         await this.poll();
 
         this.timer = setInterval(() => {
@@ -36,6 +39,8 @@ export class PollingService {
             this.timer = null;
         }
 
+        void this.adapter.setStateAsync("info.pollingActive", false, true);
+
         this.adapter.log.info("Polling stopped.");
     }
 
@@ -48,6 +53,9 @@ export class PollingService {
         }
 
         this.running = true;
+        const pollTimestamp = Date.now();
+
+        await this.adapter.setStateAsync("info.lastPoll", pollTimestamp, true);
 
         try {
             for (const pool of this.pools) {
@@ -64,12 +72,24 @@ export class PollingService {
             }
 
             await this.adapter.setStateAsync("info.connection", true, true);
-        } catch (error) {
-            await this.adapter.setStateAsync("info.connection", false, true);
-
-            this.adapter.log.error(
-                `Polling failed: ${(error as Error).message}`,
+            await this.adapter.setStateAsync(
+                "info.lastSuccessfulPoll",
+                Date.now(),
+                true,
             );
+            await this.adapter.setStateAsync("info.lastError", "", true);
+        } catch (error) {
+            const errorMessage =
+                error instanceof Error ? error.message : String(error);
+
+            await this.adapter.setStateAsync("info.connection", false, true);
+            await this.adapter.setStateAsync(
+                "info.lastError",
+                errorMessage,
+                true,
+            );
+
+            this.adapter.log.error(`Polling failed: ${errorMessage}`);
         } finally {
             this.running = false;
         }
