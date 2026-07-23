@@ -1,6 +1,7 @@
 const FIRESTORE_PROJECT = "hayward-europe";
 const FIRESTORE_BASE =
-    `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT}/databases/(default)/documents`;
+    `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT}` +
+    "/databases/(default)/documents";
 
 type FirestoreValue = {
     nullValue?: null;
@@ -62,8 +63,9 @@ export class KripsolCloud {
 
     public async getPools(): Promise<KripsolPool[]> {
         const tokens = await this.auth.getValidTokens();
-        const user = await this.getDocument(`users/${encodeURIComponent(tokens.userId)}`);
-
+        const user = await this.getDocument(
+            `users/${encodeURIComponent(tokens.userId)}`,
+        );
         const poolIds = this.readStringArray(user, "pools");
         const pools: KripsolPool[] = [];
 
@@ -81,12 +83,75 @@ export class KripsolCloud {
         return pools;
     }
 
-    public async fetchPoolData(poolId: string): Promise<Record<string, unknown>> {
+    public async fetchPoolData(
+        poolId: string,
+    ): Promise<Record<string, unknown>> {
         return this.getDocument(`pools/${encodeURIComponent(poolId)}`);
     }
 
-    private async getDocument(path: string): Promise<Record<string, unknown>> {
+    public async updatePoolField(
+        poolId: string,
+        fieldPath: string[],
+        value: ioBroker.StateValue,
+    ): Promise<void> {
+        if (fieldPath.length === 0) {
+            throw new KripsolCloudError("Cloud field path is empty.");
+        }
+
         const tokens = await this.auth.getValidTokens();
+        const firestorePath = fieldPath
+            .map((part) => this.escapeFieldPathPart(part))
+            .join(".");
+
+        const query = new URLSearchParams();
+        query.append("updateMask.fieldPaths", firestorePath);
+
+        const nestedFields = this.buildNestedFields(
+            fieldPath,
+            this.encodeValue(value),
+        );
+
+        const response = await fetch(
+            `${FIRESTORE_BASE}/pools/${encodeURIComponent(poolId)}?${query.toString()}`,
+            {
+                method: "PATCH",
+                headers: {
+                    Authorization: `Bearer ${tokens.idToken}`,
+                    Accept: "application/json",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                body: JSON.stringify({
+                    fields: nestedFields,
+                }),
+            },
+        );
+
+        if (!response.ok) {
+            const text = await response.text();
+            let message = text;
+
+            try {
+                const payload = JSON.parse(text) as FirestoreErrorResponse;
+                message =
+                    payload.error?.message ??
+                    payload.error?.status ??
+                    text;
+            } catch {
+                // Keep raw response text.
+            }
+
+            throw new KripsolCloudError(
+                `Cloud write failed for ${firestorePath} ` +
+                    `(HTTP ${response.status}): ${message || "Unknown error"}`,
+            );
+        }
+    }
+
+    private async getDocument(
+        path: string,
+    ): Promise<Record<string, unknown>> {
+        const tokens = await this.auth.getValidTokens();
+
         const response = await fetch(`${FIRESTORE_BASE}/${path}`, {
             method: "GET",
             headers: {
@@ -96,7 +161,6 @@ export class KripsolCloud {
         });
 
         const text = await response.text();
-
         let payload: FirestoreDocument | FirestoreErrorResponse;
 
         try {
@@ -109,6 +173,7 @@ export class KripsolCloud {
 
         if (!response.ok) {
             const error = (payload as FirestoreErrorResponse).error;
+
             throw new KripsolCloudError(
                 `Firestore request failed for ${path} ` +
                     `(HTTP ${response.status}, ${error?.status ?? "UNKNOWN"}): ` +
@@ -118,6 +183,65 @@ export class KripsolCloud {
 
         const document = payload as FirestoreDocument;
         return this.decodeFields(document.fields ?? {});
+    }
+
+    private buildNestedFields(
+        path: string[],
+        leafValue: FirestoreValue,
+    ): Record<string, FirestoreValue> {
+        const [head, ...tail] = path;
+
+        if (!head) {
+            return {};
+        }
+
+        if (tail.length === 0) {
+            return {
+                [head]: leafValue,
+            };
+        }
+
+        return {
+            [head]: {
+                mapValue: {
+                    fields: this.buildNestedFields(tail, leafValue),
+                },
+            },
+        };
+    }
+
+    private encodeValue(value: ioBroker.StateValue): FirestoreValue {
+        if (value === null) {
+            return { nullValue: null };
+        }
+
+        if (typeof value === "boolean") {
+            return { booleanValue: value };
+        }
+
+        if (typeof value === "number") {
+            if (Number.isInteger(value)) {
+                return { integerValue: String(value) };
+            }
+
+            return { doubleValue: value };
+        }
+
+        if (typeof value === "string") {
+            return { stringValue: value };
+        }
+
+        throw new KripsolCloudError(
+            `Unsupported cloud value type: ${typeof value}`,
+        );
+    }
+
+    private escapeFieldPathPart(part: string): string {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
+            return part;
+        }
+
+        return `\`${part.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
     }
 
     private decodeFields(
@@ -173,7 +297,7 @@ export class KripsolCloud {
         }
 
         if ("arrayValue" in value) {
-            return (value.arrayValue?.values ?? []).map(item =>
+            return (value.arrayValue?.values ?? []).map((item) =>
                 this.decodeValue(item),
             );
         }
@@ -195,7 +319,9 @@ export class KripsolCloud {
             return [];
         }
 
-        return value.filter((item): item is string => typeof item === "string");
+        return value.filter(
+            (item): item is string => typeof item === "string",
+        );
     }
 
     private getPoolName(pool: Record<string, unknown>): string {
@@ -211,19 +337,27 @@ export class KripsolCloud {
             const firstName = this.asRecord(names[0]);
             const localizedName = firstName?.name;
 
-            if (typeof localizedName === "string" && localizedName.trim()) {
+            if (
+                typeof localizedName === "string" &&
+                localizedName.trim()
+            ) {
                 return localizedName.trim();
             }
         }
 
-        if (typeof form.name === "string" && form.name.trim()) {
+        if (
+            typeof form.name === "string" &&
+            form.name.trim()
+        ) {
             return form.name.trim();
         }
 
         return "Unknown";
     }
 
-    private asRecord(value: unknown): Record<string, unknown> | null {
+    private asRecord(
+        value: unknown,
+    ): Record<string, unknown> | null {
         if (
             typeof value === "object" &&
             value !== null &&

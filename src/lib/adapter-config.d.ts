@@ -5,6 +5,8 @@ declare global {
         interface AdapterConfig {
             username: string;
             password: string;
+
+            pollingInterval: number;
         }
     }
 }

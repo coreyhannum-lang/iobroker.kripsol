@@ -1,5 +1,6 @@
 const API_KEY = "AIzaSyBLaxiyZ2nS1KgRBqWe-NY4EG7OzG5fKpE";
-const IDENTITY_TOOLKIT_BASE = "https://identitytoolkit.googleapis.com/v1/accounts";
+const IDENTITY_TOOLKIT_BASE =
+    "https://identitytoolkit.googleapis.com/v1/accounts";
 const SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token";
 const API_REFERRER = "https://hayward-europe.web.app/";
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -56,7 +57,9 @@ export class KripsolAuth {
             `${IDENTITY_TOOLKIT_BASE}:signInWithPassword?key=${API_KEY}`,
             {
                 method: "POST",
-                headers: this.buildHeaders("application/json; charset=UTF-8"),
+                headers: this.buildHeaders(
+                    "application/json; charset=UTF-8",
+                ),
                 body: JSON.stringify({
                     email: this.email,
                     password: this.password,
@@ -65,7 +68,8 @@ export class KripsolAuth {
             },
         );
 
-        const payload = (await this.readJson(response)) as FirebaseSignInResponse;
+        const payload =
+            (await this.readJson(response)) as FirebaseSignInResponse;
 
         if (!response.ok) {
             throw new KripsolAuthenticationError(
@@ -92,7 +96,6 @@ export class KripsolAuth {
             expiresIn,
             userId: payload.localId,
         };
-
         this.expiresAt = Date.now() + expiresIn * 1000;
 
         return this.tokens;
@@ -104,10 +107,25 @@ export class KripsolAuth {
         }
 
         if (Date.now() >= this.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
-            await this.refresh();
+            try {
+                await this.refresh();
+            } catch {
+                this.invalidate();
+                return this.authenticate();
+            }
         }
 
         return this.tokens;
+    }
+
+    public invalidate(): void {
+        this.tokens = null;
+        this.expiresAt = 0;
+    }
+
+    public async reconnect(): Promise<KripsolTokens> {
+        this.invalidate();
+        return this.authenticate();
     }
 
     public get userId(): string | null {
@@ -133,7 +151,8 @@ export class KripsolAuth {
             body,
         });
 
-        const payload = (await this.readJson(response)) as FirebaseRefreshResponse;
+        const payload =
+            (await this.readJson(response)) as FirebaseRefreshResponse;
 
         if (!response.ok) {
             throw new KripsolAuthenticationError(
@@ -159,7 +178,6 @@ export class KripsolAuth {
             expiresIn,
             userId: payload.user_id ?? this.tokens.userId,
         };
-
         this.expiresAt = Date.now() + expiresIn * 1000;
     }
 

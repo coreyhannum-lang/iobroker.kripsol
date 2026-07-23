@@ -26,7 +26,9 @@ var import_kripsolAuth = require("./lib/kripsolAuth");
 var import_kripsolCloud = require("./lib/kripsolCloud");
 var import_poolStateWriter = require("./lib/poolStateWriter");
 var import_pollingService = require("./lib/pollingService");
-const POLLING_INTERVAL_MS = 3e4;
+const DEFAULT_POLLING_INTERVAL_SECONDS = 30;
+const MIN_POLLING_INTERVAL_SECONDS = 10;
+const MAX_POLLING_INTERVAL_SECONDS = 3600;
 class Kripsol extends utils.Adapter {
   auth = null;
   cloud = null;
@@ -44,6 +46,7 @@ class Kripsol extends utils.Adapter {
   async onReady() {
     var _a;
     await this.setStateAsync("info.connection", false, true);
+    await this.setStateAsync("info.pollingActive", false, true);
     const username = (_a = this.config.username) == null ? void 0 : _a.trim();
     const password = this.config.password;
     if (!username || !password) {
@@ -52,6 +55,8 @@ class Kripsol extends utils.Adapter {
       );
       return;
     }
+    const pollingIntervalSeconds = this.getPollingIntervalSeconds();
+    const pollingIntervalMs = pollingIntervalSeconds * 1e3;
     this.auth = new import_kripsolAuth.KripsolAuth(username, password);
     this.cloud = new import_kripsolCloud.KripsolCloud(this.auth);
     this.stateWriter = new import_poolStateWriter.PoolStateWriter(this);
@@ -60,23 +65,17 @@ class Kripsol extends utils.Adapter {
       this.log.info(
         `Successfully authenticated with the Kripsol cloud. User ID: ${tokens.userId}`
       );
-      const pools = await this.cloud.getPools();
-      if (pools.length === 0) {
-        this.log.warn(
-          "Authentication succeeded, but no pools are assigned to this account."
-        );
-        return;
-      }
+      await this.subscribeStatesAsync("pools.*");
       this.pollingService = new import_pollingService.PollingService(
         this,
+        this.auth,
         this.cloud,
         this.stateWriter,
-        pools,
-        POLLING_INTERVAL_MS
+        pollingIntervalMs
       );
       await this.pollingService.start();
       this.log.info(
-        `Continuous pool-data polling is active for ${pools.length} pool(s).`
+        `Continuous pool-data polling is active with an interval of ${pollingIntervalSeconds} seconds.`
       );
     } catch (error) {
       await this.setStateAsync("info.connection", false, true);
@@ -89,10 +88,49 @@ class Kripsol extends utils.Adapter {
       }
     }
   }
-  onStateChange(id, state) {
-    if (state && !state.ack) {
-      this.log.debug(`Ignoring unsupported command for ${id}.`);
+  async onStateChange(id, state) {
+    var _a, _b, _c;
+    if (!state || state.ack || !this.cloud) {
+      return;
     }
+    try {
+      const object = await this.getObjectAsync(id);
+      if ((object == null ? void 0 : object.type) !== "state" || object.common.write !== true || typeof ((_a = object.native) == null ? void 0 : _a.poolId) !== "string" || !Array.isArray((_b = object.native) == null ? void 0 : _b.cloudPath)) {
+        this.log.warn(`Ignoring unsupported write request for ${id}.`);
+        return;
+      }
+      const cloudPath = object.native.cloudPath.filter(
+        (part) => typeof part === "string"
+      );
+      await this.cloud.updatePoolField(
+        object.native.poolId,
+        cloudPath,
+        state.val
+      );
+      await this.setStateAsync(id, state.val, true);
+      this.log.info(
+        `Cloud value updated: ${id} = ${JSON.stringify(state.val)}`
+      );
+      await ((_c = this.pollingService) == null ? void 0 : _c.pollNow());
+    } catch (error) {
+      this.log.error(
+        `Could not write ${id}: ${error.message}`
+      );
+      const oldState = await this.getForeignStateAsync(id);
+      if (oldState) {
+        await this.setStateAsync(id, oldState.val, true);
+      }
+    }
+  }
+  getPollingIntervalSeconds() {
+    const configured = Number(this.config.pollingInterval);
+    if (!Number.isFinite(configured)) {
+      return DEFAULT_POLLING_INTERVAL_SECONDS;
+    }
+    return Math.min(
+      MAX_POLLING_INTERVAL_SECONDS,
+      Math.max(MIN_POLLING_INTERVAL_SECONDS, Math.round(configured))
+    );
   }
   onUnload(callback) {
     var _a;

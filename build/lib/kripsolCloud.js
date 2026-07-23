@@ -36,7 +36,9 @@ class KripsolCloud {
   }
   async getPools() {
     const tokens = await this.auth.getValidTokens();
-    const user = await this.getDocument(`users/${encodeURIComponent(tokens.userId)}`);
+    const user = await this.getDocument(
+      `users/${encodeURIComponent(tokens.userId)}`
+    );
     const poolIds = this.readStringArray(user, "pools");
     const pools = [];
     for (const poolId of poolIds) {
@@ -52,6 +54,46 @@ class KripsolCloud {
   }
   async fetchPoolData(poolId) {
     return this.getDocument(`pools/${encodeURIComponent(poolId)}`);
+  }
+  async updatePoolField(poolId, fieldPath, value) {
+    var _a, _b, _c, _d;
+    if (fieldPath.length === 0) {
+      throw new KripsolCloudError("Cloud field path is empty.");
+    }
+    const tokens = await this.auth.getValidTokens();
+    const firestorePath = fieldPath.map((part) => this.escapeFieldPathPart(part)).join(".");
+    const query = new URLSearchParams();
+    query.append("updateMask.fieldPaths", firestorePath);
+    const nestedFields = this.buildNestedFields(
+      fieldPath,
+      this.encodeValue(value)
+    );
+    const response = await fetch(
+      `${FIRESTORE_BASE}/pools/${encodeURIComponent(poolId)}?${query.toString()}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${tokens.idToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json; charset=UTF-8"
+        },
+        body: JSON.stringify({
+          fields: nestedFields
+        })
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      let message = text;
+      try {
+        const payload = JSON.parse(text);
+        message = (_d = (_c = (_a = payload.error) == null ? void 0 : _a.message) != null ? _c : (_b = payload.error) == null ? void 0 : _b.status) != null ? _d : text;
+      } catch {
+      }
+      throw new KripsolCloudError(
+        `Cloud write failed for ${firestorePath} (HTTP ${response.status}): ${message || "Unknown error"}`
+      );
+    }
   }
   async getDocument(path) {
     var _a, _b, _c;
@@ -80,6 +122,50 @@ class KripsolCloud {
     }
     const document = payload;
     return this.decodeFields((_c = document.fields) != null ? _c : {});
+  }
+  buildNestedFields(path, leafValue) {
+    const [head, ...tail] = path;
+    if (!head) {
+      return {};
+    }
+    if (tail.length === 0) {
+      return {
+        [head]: leafValue
+      };
+    }
+    return {
+      [head]: {
+        mapValue: {
+          fields: this.buildNestedFields(tail, leafValue)
+        }
+      }
+    };
+  }
+  encodeValue(value) {
+    if (value === null) {
+      return { nullValue: null };
+    }
+    if (typeof value === "boolean") {
+      return { booleanValue: value };
+    }
+    if (typeof value === "number") {
+      if (Number.isInteger(value)) {
+        return { integerValue: String(value) };
+      }
+      return { doubleValue: value };
+    }
+    if (typeof value === "string") {
+      return { stringValue: value };
+    }
+    throw new KripsolCloudError(
+      `Unsupported cloud value type: ${typeof value}`
+    );
+  }
+  escapeFieldPathPart(part) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
+      return part;
+    }
+    return `\`${part.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
   }
   decodeFields(fields) {
     const result = {};
@@ -135,7 +221,9 @@ class KripsolCloud {
     if (!Array.isArray(value)) {
       return [];
     }
-    return value.filter((item) => typeof item === "string");
+    return value.filter(
+      (item) => typeof item === "string"
+    );
   }
   getPoolName(pool) {
     const form = this.asRecord(pool.form);

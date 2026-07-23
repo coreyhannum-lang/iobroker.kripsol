@@ -45,7 +45,9 @@ class KripsolAuth {
       `${IDENTITY_TOOLKIT_BASE}:signInWithPassword?key=${API_KEY}`,
       {
         method: "POST",
-        headers: this.buildHeaders("application/json; charset=UTF-8"),
+        headers: this.buildHeaders(
+          "application/json; charset=UTF-8"
+        ),
         body: JSON.stringify({
           email: this.email,
           password: this.password,
@@ -79,9 +81,22 @@ class KripsolAuth {
       return this.authenticate();
     }
     if (Date.now() >= this.expiresAt - TOKEN_REFRESH_BUFFER_MS) {
-      await this.refresh();
+      try {
+        await this.refresh();
+      } catch {
+        this.invalidate();
+        return this.authenticate();
+      }
     }
     return this.tokens;
+  }
+  invalidate() {
+    this.tokens = null;
+    this.expiresAt = 0;
+  }
+  async reconnect() {
+    this.invalidate();
+    return this.authenticate();
   }
   get userId() {
     var _a, _b;

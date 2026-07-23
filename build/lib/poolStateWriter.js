@@ -22,24 +22,36 @@ __export(poolStateWriter_exports, {
 });
 module.exports = __toCommonJS(poolStateWriter_exports);
 const METADATA_RULES = [
-  { pattern: /(^|\.)(water|pool).*(temp|temperature)$|(^|\.)(temp|temperature).*(water|pool)$/i, name: "Water temperature", role: "value.temperature", unit: "\xB0C" },
-  { pattern: /(^|\.)(air|ambient).*(temp|temperature)$|(^|\.)(temp|temperature).*(air|ambient)$/i, name: "Air temperature", role: "value.temperature", unit: "\xB0C" },
-  { pattern: /(^|\.)(temp|temperature)$/i, name: "Temperature", role: "value.temperature", unit: "\xB0C" },
-  { pattern: /(^|\.)(ph|phvalue|ph_value)$/i, name: "pH value", role: "value", unit: "pH" },
-  { pattern: /(^|\.)(orp|redox|rx)$/i, name: "Redox potential", role: "value", unit: "mV" },
-  { pattern: /(^|\.)(salinity|salt|saltlevel|salt_level)$/i, name: "Salinity", role: "value", unit: "g/l" },
-  { pattern: /(^|\.)(conductivity|ec)$/i, name: "Conductivity", role: "value", unit: "\xB5S/cm" },
-  { pattern: /(^|\.)(flow|flowrate|flow_rate)$/i, name: "Flow rate", role: "value", unit: "l/min" },
-  { pattern: /(^|\.)(pressure)$/i, name: "Pressure", role: "value.pressure", unit: "bar" },
-  { pattern: /(^|\.)(runtime|duration|time|timer|minutes|min)$/i, name: "Runtime", role: "value.interval", unit: "min" },
-  { pattern: /(^|\.)(speed|rpm)$/i, name: "Speed", role: "value", unit: "rpm" },
-  { pattern: /(^|\.)(percent|percentage|level|power)$/i, name: "Level", role: "value", unit: "%" },
-  { pattern: /(^|\.)(enabled|active|running|present|online|connected)$/i, name: "Active", role: "indicator" },
-  { pattern: /(^|\.)(alarm|error|fault)$/i, name: "Error", role: "indicator.alarm" },
-  { pattern: /(^|\.)(light|lights)$/i, name: "Pool light", role: "switch" },
-  { pattern: /(^|\.)(filtration|filter|pump)$/i, name: "Filtration", role: "switch" },
-  { pattern: /(^|\.)(backwash)$/i, name: "Backwash", role: "switch" }
+  { pattern: /(water|pool).*(temp|temperature)|(temp|temperature).*(water|pool)/i, name: "Water temperature", role: "value.temperature", unit: "\xB0C", category: "sensors" },
+  { pattern: /(air|ambient).*(temp|temperature)|(temp|temperature).*(air|ambient)/i, name: "Air temperature", role: "value.temperature", unit: "\xB0C", category: "sensors" },
+  { pattern: /(^|\.)(temp|temperature)(\.|$)/i, name: "Temperature", role: "value.temperature", unit: "\xB0C", category: "sensors" },
+  { pattern: /(^|\.)(ph|phvalue|ph_value)(\.|$)/i, name: "pH value", role: "value", unit: "pH", category: "waterQuality" },
+  { pattern: /(^|\.)(orp|redox|rx)(\.|$)/i, name: "Redox potential", role: "value", unit: "mV", category: "waterQuality" },
+  { pattern: /(salinity|salt|saltlevel|salt_level)/i, name: "Salinity", role: "value", unit: "g/l", category: "waterQuality" },
+  { pattern: /(conductivity|(^|\.)ec(\.|$))/i, name: "Conductivity", role: "value", unit: "\xB5S/cm", category: "waterQuality" },
+  { pattern: /(flow|flowrate|flow_rate)/i, name: "Flow rate", role: "value", unit: "l/min", category: "hydraulics" },
+  { pattern: /pressure/i, name: "Pressure", role: "value.pressure", unit: "bar", category: "hydraulics" },
+  { pattern: /(runtime|duration|timer|minutes)/i, name: "Runtime", role: "value.interval", unit: "min", category: "timers" },
+  { pattern: /(^|\.)(speed|rpm)(\.|$)/i, name: "Speed", role: "level", unit: "rpm", write: true, category: "controls" },
+  { pattern: /(percentage|percent|output|setpoint|target)/i, name: "Set value", role: "level", unit: "%", write: true, category: "controls" },
+  { pattern: /(light|lights|lighting)/i, name: "Pool light", role: "switch", write: true, category: "controls" },
+  { pattern: /(filtration|filter|pump)/i, name: "Filtration", role: "switch", write: true, category: "controls" },
+  { pattern: /backwash/i, name: "Backwash", role: "switch", write: true, category: "controls" },
+  { pattern: /(heating|heater|heatpump|heat_pump)/i, name: "Heating", role: "switch", write: true, category: "controls" },
+  { pattern: /(enabled|enable|active|running|manual|automatic|auto|mode)/i, name: "Operating state", role: "switch", write: true, category: "controls" },
+  { pattern: /(alarm|error|fault|warning)/i, name: "Error", role: "indicator.alarm", category: "diagnostics" },
+  { pattern: /(online|connected|connection|status)/i, name: "Status", role: "indicator", category: "diagnostics" }
 ];
+const CATEGORY_NAMES = {
+  controls: "Controls",
+  sensors: "Sensors",
+  waterQuality: "Water quality",
+  hydraulics: "Hydraulics",
+  timers: "Timers",
+  diagnostics: "Diagnostics",
+  information: "Information",
+  other: "Other"
+};
 class PoolStateWriter {
   constructor(adapter) {
     this.adapter = adapter;
@@ -48,59 +60,86 @@ class PoolStateWriter {
     const poolId = this.sanitizeIdPart(pool.id);
     const poolRoot = `pools.${poolId}`;
     await this.ensureChannel("pools", "Pools");
-    await this.ensureChannel(poolRoot, pool.name);
+    await this.ensureDevice(poolRoot, pool.name);
     let changedStateCount = 0;
+    const informationRoot = `${poolRoot}.information`;
+    await this.ensureChannel(informationRoot, "Information");
     changedStateCount += await this.writeState(
-      `${poolRoot}.name`,
+      `${informationRoot}.name`,
       "Pool name",
-      pool.name
+      pool.name,
+      pool.id,
+      ["name"],
+      false
     );
     changedStateCount += await this.writeState(
-      `${poolRoot}.cloudId`,
+      `${informationRoot}.cloudId`,
       "Cloud pool ID",
-      pool.id
+      pool.id,
+      pool.id,
+      ["cloudId"],
+      false
     );
-    const dataRoot = `${poolRoot}.data`;
-    await this.ensureChannel(dataRoot, "Cloud data");
-    changedStateCount += await this.writeValue(dataRoot, poolData);
+    changedStateCount += await this.writeRecord(
+      poolRoot,
+      pool.id,
+      poolData,
+      []
+    );
     return changedStateCount;
   }
-  async writeValue(path, value) {
-    if (this.isRecord(value)) {
-      let changedStateCount = 0;
-      for (const [key, childValue] of Object.entries(value)) {
-        const childId = this.sanitizeIdPart(key);
-        const childPath = `${path}.${childId}`;
-        if (this.isRecord(childValue)) {
-          await this.ensureChannel(childPath, this.humanizeKey(key));
-          changedStateCount += await this.writeValue(
-            childPath,
-            childValue
-          );
-          continue;
-        }
-        if (Array.isArray(childValue)) {
-          changedStateCount += await this.writeState(
-            childPath,
-            this.humanizeKey(key),
-            JSON.stringify(childValue),
-            "json"
-          );
-          continue;
-        }
-        changedStateCount += await this.writeState(
-          childPath,
-          this.humanizeKey(key),
-          childValue
+  async writeRecord(poolRoot, poolId, record, cloudPath) {
+    var _a, _b, _c, _d;
+    let changedStateCount = 0;
+    for (const [key, value] of Object.entries(record)) {
+      const nextCloudPath = [...cloudPath, key];
+      if (this.isRecord(value)) {
+        changedStateCount += await this.writeRecord(
+          poolRoot,
+          poolId,
+          value,
+          nextCloudPath
         );
+        continue;
       }
-      return changedStateCount;
+      const metadata = this.findMetadata(nextCloudPath);
+      const category = (_a = metadata == null ? void 0 : metadata.category) != null ? _a : "other";
+      const categoryRoot = `${poolRoot}.${category}`;
+      await this.ensureChannel(
+        categoryRoot,
+        (_b = CATEGORY_NAMES[category]) != null ? _b : this.humanizeKey(category)
+      );
+      const relativeId = nextCloudPath.map((part) => this.sanitizeIdPart(part)).join("_");
+      const stateId = `${categoryRoot}.${relativeId}`;
+      if (Array.isArray(value)) {
+        changedStateCount += await this.writeState(
+          stateId,
+          (_c = metadata == null ? void 0 : metadata.name) != null ? _c : this.humanizeKey(key),
+          JSON.stringify(value),
+          poolId,
+          nextCloudPath,
+          false,
+          "json"
+        );
+        continue;
+      }
+      changedStateCount += await this.writeState(
+        stateId,
+        (_d = metadata == null ? void 0 : metadata.name) != null ? _d : this.humanizeKey(key),
+        value,
+        poolId,
+        nextCloudPath,
+        (metadata == null ? void 0 : metadata.write) === true
+      );
     }
-    return this.writeState(
-      path,
-      this.humanizeKey(this.getLastPathPart(path)),
-      value
-    );
+    return changedStateCount;
+  }
+  async ensureDevice(id, name) {
+    await this.adapter.extendObjectAsync(id, {
+      type: "device",
+      common: { name },
+      native: {}
+    });
   }
   async ensureChannel(id, name) {
     await this.adapter.extendObjectAsync(id, {
@@ -109,10 +148,14 @@ class PoolStateWriter {
       native: {}
     });
   }
-  async writeState(id, fallbackName, value, forcedRole) {
+  async writeState(id, fallbackName, value, poolId, cloudPath, requestedWrite, forcedRole) {
     var _a, _b, _c;
-    const definition = this.getStateDefinition(id, value, forcedRole);
-    const metadata = this.findMetadata(id);
+    const metadata = this.findMetadata(cloudPath);
+    const definition = this.getStateDefinition(
+      value,
+      requestedWrite,
+      forcedRole
+    );
     await this.adapter.extendObjectAsync(id, {
       type: "state",
       common: {
@@ -121,53 +164,70 @@ class PoolStateWriter {
         role: (_b = metadata == null ? void 0 : metadata.role) != null ? _b : definition.role,
         unit: (_c = metadata == null ? void 0 : metadata.unit) != null ? _c : definition.unit,
         read: true,
-        write: false
+        write: definition.write
       },
-      native: {}
+      native: {
+        poolId,
+        cloudPath
+      }
     });
     const currentState = await this.adapter.getStateAsync(id);
-    if (currentState && this.valuesEqual(currentState.val, definition.value)) {
+    if (currentState && currentState.val === definition.value) {
       return 0;
     }
     await this.adapter.setStateAsync(id, definition.value, true);
     return 1;
   }
-  getStateDefinition(id, value, forcedRole) {
-    var _a, _b;
+  getStateDefinition(value, requestedWrite, forcedRole) {
     if (forcedRole === "json") {
       return {
         type: "string",
         role: "json",
-        value: typeof value === "string" ? value : JSON.stringify(value)
+        value: typeof value === "string" ? value : JSON.stringify(value),
+        write: false
       };
     }
     if (typeof value === "boolean") {
       return {
         type: "boolean",
-        role: (_b = (_a = this.findMetadata(id)) == null ? void 0 : _a.role) != null ? _b : "indicator",
-        value
+        role: requestedWrite ? "switch" : "indicator",
+        value,
+        write: requestedWrite
       };
     }
     if (typeof value === "number") {
-      return { type: "number", role: "value", value };
+      return {
+        type: "number",
+        role: requestedWrite ? "level" : "value",
+        value,
+        write: requestedWrite
+      };
     }
     if (typeof value === "string") {
-      return { type: "string", role: "text", value };
+      return {
+        type: "string",
+        role: "text",
+        value,
+        write: requestedWrite
+      };
     }
     if (value === null || value === void 0) {
-      return { type: "string", role: "json", value: "null" };
+      return {
+        type: "string",
+        role: "json",
+        value: "null",
+        write: false
+      };
     }
     return {
       type: "string",
       role: "json",
-      value: JSON.stringify(value)
+      value: JSON.stringify(value),
+      write: false
     };
   }
-  valuesEqual(currentValue, newValue) {
-    return currentValue === newValue;
-  }
-  findMetadata(id) {
-    const normalized = id.replace(/^pools\.[^.]+\.data\./, "");
+  findMetadata(cloudPath) {
+    const normalized = cloudPath.join(".");
     return METADATA_RULES.find(
       (rule) => rule.pattern.test(normalized)
     );
@@ -179,10 +239,6 @@ class PoolStateWriter {
   sanitizeIdPart(value) {
     const sanitized = value.trim().replace(/[.\s*,;'"`<>\\?[\]{}=+~!#$%^&()|/]+/g, "_").replace(/^_+|_+$/g, "");
     return sanitized || "unnamed";
-  }
-  getLastPathPart(path) {
-    var _a;
-    return (_a = path.split(".").at(-1)) != null ? _a : path;
   }
   isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);

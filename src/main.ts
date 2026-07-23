@@ -14,7 +14,9 @@ import {
 import { PoolStateWriter } from "./lib/poolStateWriter";
 import { PollingService } from "./lib/pollingService";
 
-const POLLING_INTERVAL_MS = 30_000;
+const DEFAULT_POLLING_INTERVAL_SECONDS = 30;
+const MIN_POLLING_INTERVAL_SECONDS = 10;
+const MAX_POLLING_INTERVAL_SECONDS = 3600;
 
 class Kripsol extends utils.Adapter {
     private auth: KripsolAuth | null = null;
@@ -35,6 +37,7 @@ class Kripsol extends utils.Adapter {
 
     private async onReady(): Promise<void> {
         await this.setStateAsync("info.connection", false, true);
+        await this.setStateAsync("info.pollingActive", false, true);
 
         const username = this.config.username?.trim();
         const password = this.config.password;
@@ -45,6 +48,9 @@ class Kripsol extends utils.Adapter {
             );
             return;
         }
+
+        const pollingIntervalSeconds = this.getPollingIntervalSeconds();
+        const pollingIntervalMs = pollingIntervalSeconds * 1000;
 
         this.auth = new KripsolAuth(username, password);
         this.cloud = new KripsolCloud(this.auth);
@@ -57,27 +63,20 @@ class Kripsol extends utils.Adapter {
                 `Successfully authenticated with the Kripsol cloud. User ID: ${tokens.userId}`,
             );
 
-            const pools = await this.cloud.getPools();
-
-            if (pools.length === 0) {
-                this.log.warn(
-                    "Authentication succeeded, but no pools are assigned to this account.",
-                );
-                return;
-            }
+            await this.subscribeStatesAsync("pools.*");
 
             this.pollingService = new PollingService(
                 this,
+                this.auth,
                 this.cloud,
                 this.stateWriter,
-                pools,
-                POLLING_INTERVAL_MS,
+                pollingIntervalMs,
             );
 
             await this.pollingService.start();
 
             this.log.info(
-                `Continuous pool-data polling is active for ${pools.length} pool(s).`,
+                `Continuous pool-data polling is active with an interval of ${pollingIntervalSeconds} seconds.`,
             );
         } catch (error) {
             await this.setStateAsync("info.connection", false, true);
@@ -95,13 +94,67 @@ class Kripsol extends utils.Adapter {
         }
     }
 
-    private onStateChange(
+    private async onStateChange(
         id: string,
         state: ioBroker.State | null | undefined,
-    ): void {
-        if (state && !state.ack) {
-            this.log.debug(`Ignoring unsupported command for ${id}.`);
+    ): Promise<void> {
+        if (!state || state.ack || !this.cloud) {
+            return;
         }
+
+        try {
+            const object = await this.getObjectAsync(id);
+
+            if (
+                object?.type !== "state" ||
+                object.common.write !== true ||
+                typeof object.native?.poolId !== "string" ||
+                !Array.isArray(object.native?.cloudPath)
+            ) {
+                this.log.warn(`Ignoring unsupported write request for ${id}.`);
+                return;
+            }
+
+            const cloudPath = object.native.cloudPath.filter(
+                (part: unknown): part is string => typeof part === "string",
+            );
+
+            await this.cloud.updatePoolField(
+                object.native.poolId,
+                cloudPath,
+                state.val,
+            );
+
+            await this.setStateAsync(id, state.val, true);
+
+            this.log.info(
+                `Cloud value updated: ${id} = ${JSON.stringify(state.val)}`,
+            );
+
+            await this.pollingService?.pollNow();
+        } catch (error) {
+            this.log.error(
+                `Could not write ${id}: ${(error as Error).message}`,
+            );
+
+            const oldState = await this.getForeignStateAsync(id);
+            if (oldState) {
+                await this.setStateAsync(id, oldState.val, true);
+            }
+        }
+    }
+
+    private getPollingIntervalSeconds(): number {
+        const configured = Number(this.config.pollingInterval);
+
+        if (!Number.isFinite(configured)) {
+            return DEFAULT_POLLING_INTERVAL_SECONDS;
+        }
+
+        return Math.min(
+            MAX_POLLING_INTERVAL_SECONDS,
+            Math.max(MIN_POLLING_INTERVAL_SECONDS, Math.round(configured)),
+        );
     }
 
     private onUnload(callback: () => void): void {
