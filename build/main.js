@@ -45,8 +45,10 @@ class Kripsol extends utils.Adapter {
   }
   async onReady() {
     var _a;
+    await this.createInfoObjects();
     await this.setStateAsync("info.connection", false, true);
     await this.setStateAsync("info.pollingActive", false, true);
+    await this.setStateAsync("info.lastError", "", true);
     const username = (_a = this.config.username) == null ? void 0 : _a.trim();
     const password = this.config.password;
     if (!username || !password) {
@@ -88,6 +90,93 @@ class Kripsol extends utils.Adapter {
       }
     }
   }
+  async createInfoObjects() {
+    await this.extendObjectAsync("info", {
+      type: "channel",
+      common: {
+        name: {
+          en: "Information",
+          de: "Information"
+        }
+      },
+      native: {}
+    });
+    await this.extendObjectAsync("info.connection", {
+      type: "state",
+      common: {
+        name: {
+          en: "Cloud connection",
+          de: "Cloud-Verbindung"
+        },
+        type: "boolean",
+        role: "indicator.connected",
+        read: true,
+        write: false,
+        def: false
+      },
+      native: {}
+    });
+    await this.extendObjectAsync("info.pollingActive", {
+      type: "state",
+      common: {
+        name: {
+          en: "Polling active",
+          de: "Polling aktiv"
+        },
+        type: "boolean",
+        role: "indicator",
+        read: true,
+        write: false,
+        def: false
+      },
+      native: {}
+    });
+    await this.extendObjectAsync("info.lastPoll", {
+      type: "state",
+      common: {
+        name: {
+          en: "Last polling attempt",
+          de: "Letzter Polling-Versuch"
+        },
+        type: "number",
+        role: "value.time",
+        read: true,
+        write: false,
+        def: 0
+      },
+      native: {}
+    });
+    await this.extendObjectAsync("info.lastSuccessfulPoll", {
+      type: "state",
+      common: {
+        name: {
+          en: "Last successful polling",
+          de: "Letztes erfolgreiches Polling"
+        },
+        type: "number",
+        role: "value.time",
+        read: true,
+        write: false,
+        def: 0
+      },
+      native: {}
+    });
+    await this.extendObjectAsync("info.lastError", {
+      type: "state",
+      common: {
+        name: {
+          en: "Last polling error",
+          de: "Letzter Polling-Fehler"
+        },
+        type: "string",
+        role: "text",
+        read: true,
+        write: false,
+        def: ""
+      },
+      native: {}
+    });
+  }
   async onStateChange(id, state) {
     var _a, _b, _c;
     if (!state || state.ack || !this.cloud) {
@@ -116,10 +205,6 @@ class Kripsol extends utils.Adapter {
       this.log.error(
         `Could not write ${id}: ${error.message}`
       );
-      const oldState = await this.getForeignStateAsync(id);
-      if (oldState) {
-        await this.setStateAsync(id, oldState.val, true);
-      }
     }
   }
   getPollingIntervalSeconds() {

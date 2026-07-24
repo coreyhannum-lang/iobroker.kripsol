@@ -1,11 +1,11 @@
-// This file extends the AdapterConfig type from "@iobroker/types"
-
+/**
+ * ioBroker adapter configuration.
+ */
 declare global {
     namespace ioBroker {
         interface AdapterConfig {
             username: string;
             password: string;
-
             pollingInterval: number;
         }
     }
