@@ -185,6 +185,7 @@ class PoolStateWriter {
     return 1;
   }
   getStateDefinition(value, fieldDefinition, forcedRole) {
+    var _a;
     if (forcedRole === "json") {
       return {
         type: "string",
@@ -198,7 +199,8 @@ class PoolStateWriter {
       if (fieldDefinition.booleanNumeric) {
         convertedValue = value === true || value === 1 || value === "1";
       } else if (fieldDefinition.type === "number") {
-        convertedValue = Number(value);
+        const numericValue = Number(value);
+        convertedValue = numericValue * ((_a = fieldDefinition.factor) != null ? _a : 1);
       } else if (fieldDefinition.type === "boolean") {
         convertedValue = Boolean(value);
       } else {

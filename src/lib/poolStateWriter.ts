@@ -241,7 +241,9 @@ export class PoolStateWriter {
                 convertedValue =
                     value === true || value === 1 || value === "1";
             } else if (fieldDefinition.type === "number") {
-                convertedValue = Number(value);
+                const numericValue = Number(value);
+                convertedValue =
+                    numericValue * (fieldDefinition.factor ?? 1);
             } else if (fieldDefinition.type === "boolean") {
                 convertedValue = Boolean(value);
             } else {

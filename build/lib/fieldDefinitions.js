@@ -56,6 +56,40 @@ const FIELD_DEFINITIONS = {
       "1": "Mittel",
       "2": "Schnell"
     }
+  },
+  "modules.ph.current": {
+    ioPath: "Wasserwerte.pH.Istwert",
+    name: "pH-Istwert",
+    type: "number",
+    role: "value",
+    write: false,
+    unit: "pH",
+    factor: 0.01
+  },
+  "modules.ph.status.high_value": {
+    ioPath: "Wasserwerte.pH.Sollwert",
+    name: "pH-Sollwert",
+    type: "number",
+    role: "level",
+    write: false,
+    unit: "pH",
+    factor: 0.01
+  },
+  "modules.rx.current": {
+    ioPath: "Wasserwerte.Redox.Istwert",
+    name: "Redox-Istwert",
+    type: "number",
+    role: "value",
+    write: false,
+    unit: "mV"
+  },
+  "modules.rx.status.value": {
+    ioPath: "Wasserwerte.Redox.Sollwert",
+    name: "Redox-Sollwert",
+    type: "number",
+    role: "level",
+    write: false,
+    unit: "mV"
   }
 };
 function getFieldDefinition(cloudPath) {
