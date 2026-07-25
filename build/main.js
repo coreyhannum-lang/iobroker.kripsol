@@ -29,11 +29,13 @@ var import_pollingService = require("./lib/pollingService");
 const DEFAULT_POLLING_INTERVAL_SECONDS = 30;
 const MIN_POLLING_INTERVAL_SECONDS = 10;
 const MAX_POLLING_INTERVAL_SECONDS = 3600;
+const WRITE_POLL_DELAY_MS = 5e3;
 class Kripsol extends utils.Adapter {
   auth = null;
   cloud = null;
   stateWriter = null;
   pollingService = null;
+  delayedPollTimer = null;
   constructor(options = {}) {
     super({
       ...options,
@@ -45,10 +47,8 @@ class Kripsol extends utils.Adapter {
   }
   async onReady() {
     var _a;
-    await this.createInfoObjects();
+    await this.createGlobalInfoObjects();
     await this.setStateAsync("info.connection", false, true);
-    await this.setStateAsync("info.pollingActive", false, true);
-    await this.setStateAsync("info.lastError", "", true);
     const username = (_a = this.config.username) == null ? void 0 : _a.trim();
     const password = this.config.password;
     if (!username || !password) {
@@ -90,7 +90,7 @@ class Kripsol extends utils.Adapter {
       }
     }
   }
-  async createInfoObjects() {
+  async createGlobalInfoObjects() {
     await this.extendObjectAsync("info", {
       type: "channel",
       common: {
@@ -116,69 +116,9 @@ class Kripsol extends utils.Adapter {
       },
       native: {}
     });
-    await this.extendObjectAsync("info.pollingActive", {
-      type: "state",
-      common: {
-        name: {
-          en: "Polling active",
-          de: "Polling aktiv"
-        },
-        type: "boolean",
-        role: "indicator",
-        read: true,
-        write: false,
-        def: false
-      },
-      native: {}
-    });
-    await this.extendObjectAsync("info.lastPoll", {
-      type: "state",
-      common: {
-        name: {
-          en: "Last polling attempt",
-          de: "Letzter Polling-Versuch"
-        },
-        type: "number",
-        role: "value.time",
-        read: true,
-        write: false,
-        def: 0
-      },
-      native: {}
-    });
-    await this.extendObjectAsync("info.lastSuccessfulPoll", {
-      type: "state",
-      common: {
-        name: {
-          en: "Last successful polling",
-          de: "Letztes erfolgreiches Polling"
-        },
-        type: "number",
-        role: "value.time",
-        read: true,
-        write: false,
-        def: 0
-      },
-      native: {}
-    });
-    await this.extendObjectAsync("info.lastError", {
-      type: "state",
-      common: {
-        name: {
-          en: "Last polling error",
-          de: "Letzter Polling-Fehler"
-        },
-        type: "string",
-        role: "text",
-        read: true,
-        write: false,
-        def: ""
-      },
-      native: {}
-    });
   }
   async onStateChange(id, state) {
-    var _a, _b, _c;
+    var _a, _b;
     if (!state || state.ack || !this.cloud) {
       return;
     }
@@ -191,21 +131,42 @@ class Kripsol extends utils.Adapter {
       const cloudPath = object.native.cloudPath.filter(
         (part) => typeof part === "string"
       );
+      let cloudValue = state.val;
+      if (object.common.type === "boolean") {
+        cloudValue = state.val ? 1 : 0;
+      }
+      this.log.info(
+        `Cloud command started: ${cloudPath.join(".")} = ${JSON.stringify(cloudValue)}`
+      );
       await this.cloud.updatePoolField(
         object.native.poolId,
         cloudPath,
-        state.val
+        cloudValue
       );
       await this.setStateAsync(id, state.val, true);
       this.log.info(
-        `Cloud value updated: ${id} = ${JSON.stringify(state.val)}`
+        `Cloud command accepted: ${cloudPath.join(".")} = ${JSON.stringify(cloudValue)}`
       );
-      await ((_c = this.pollingService) == null ? void 0 : _c.pollNow());
+      this.schedulePollAfterWrite();
     } catch (error) {
       this.log.error(
         `Could not write ${id}: ${error.message}`
       );
     }
+  }
+  schedulePollAfterWrite() {
+    if (this.delayedPollTimer) {
+      clearTimeout(this.delayedPollTimer);
+      this.log.debug("Delayed polling rescheduled.");
+    } else {
+      this.log.debug("Delayed polling scheduled in 5 seconds.");
+    }
+    this.delayedPollTimer = setTimeout(() => {
+      var _a;
+      this.delayedPollTimer = null;
+      this.log.debug("Starting delayed polling after cloud write.");
+      void ((_a = this.pollingService) == null ? void 0 : _a.pollNow());
+    }, WRITE_POLL_DELAY_MS);
   }
   getPollingIntervalSeconds() {
     const configured = Number(this.config.pollingInterval);
@@ -214,11 +175,18 @@ class Kripsol extends utils.Adapter {
     }
     return Math.min(
       MAX_POLLING_INTERVAL_SECONDS,
-      Math.max(MIN_POLLING_INTERVAL_SECONDS, Math.round(configured))
+      Math.max(
+        MIN_POLLING_INTERVAL_SECONDS,
+        Math.round(configured)
+      )
     );
   }
   onUnload(callback) {
     var _a;
+    if (this.delayedPollTimer) {
+      clearTimeout(this.delayedPollTimer);
+      this.delayedPollTimer = null;
+    }
     (_a = this.pollingService) == null ? void 0 : _a.stop();
     this.pollingService = null;
     this.stateWriter = null;

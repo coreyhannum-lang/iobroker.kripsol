@@ -17,12 +17,14 @@ import { PollingService } from "./lib/pollingService";
 const DEFAULT_POLLING_INTERVAL_SECONDS = 30;
 const MIN_POLLING_INTERVAL_SECONDS = 10;
 const MAX_POLLING_INTERVAL_SECONDS = 3600;
+const WRITE_POLL_DELAY_MS = 5000;
 
 class Kripsol extends utils.Adapter {
     private auth: KripsolAuth | null = null;
     private cloud: KripsolCloud | null = null;
     private stateWriter: PoolStateWriter | null = null;
     private pollingService: PollingService | null = null;
+    private delayedPollTimer: NodeJS.Timeout | null = null;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
@@ -36,11 +38,8 @@ class Kripsol extends utils.Adapter {
     }
 
     private async onReady(): Promise<void> {
-        await this.createInfoObjects();
-
+        await this.createGlobalInfoObjects();
         await this.setStateAsync("info.connection", false, true);
-        await this.setStateAsync("info.pollingActive", false, true);
-        await this.setStateAsync("info.lastError", "", true);
 
         const username = this.config.username?.trim();
         const password = this.config.password;
@@ -97,7 +96,7 @@ class Kripsol extends utils.Adapter {
         }
     }
 
-    private async createInfoObjects(): Promise<void> {
+    private async createGlobalInfoObjects(): Promise<void> {
         await this.extendObjectAsync("info", {
             type: "channel",
             common: {
@@ -121,70 +120,6 @@ class Kripsol extends utils.Adapter {
                 read: true,
                 write: false,
                 def: false,
-            },
-            native: {},
-        });
-
-        await this.extendObjectAsync("info.pollingActive", {
-            type: "state",
-            common: {
-                name: {
-                    en: "Polling active",
-                    de: "Polling aktiv",
-                },
-                type: "boolean",
-                role: "indicator",
-                read: true,
-                write: false,
-                def: false,
-            },
-            native: {},
-        });
-
-        await this.extendObjectAsync("info.lastPoll", {
-            type: "state",
-            common: {
-                name: {
-                    en: "Last polling attempt",
-                    de: "Letzter Polling-Versuch",
-                },
-                type: "number",
-                role: "value.time",
-                read: true,
-                write: false,
-                def: 0,
-            },
-            native: {},
-        });
-
-        await this.extendObjectAsync("info.lastSuccessfulPoll", {
-            type: "state",
-            common: {
-                name: {
-                    en: "Last successful polling",
-                    de: "Letztes erfolgreiches Polling",
-                },
-                type: "number",
-                role: "value.time",
-                read: true,
-                write: false,
-                def: 0,
-            },
-            native: {},
-        });
-
-        await this.extendObjectAsync("info.lastError", {
-            type: "state",
-            common: {
-                name: {
-                    en: "Last polling error",
-                    de: "Letzter Polling-Fehler",
-                },
-                type: "string",
-                role: "text",
-                read: true,
-                write: false,
-                def: "",
             },
             native: {},
         });
@@ -212,27 +147,53 @@ class Kripsol extends utils.Adapter {
             }
 
             const cloudPath = object.native.cloudPath.filter(
-                (part: unknown): part is string => typeof part === "string",
+                (part: unknown): part is string =>
+                    typeof part === "string",
+            );
+
+            let cloudValue: ioBroker.StateValue = state.val;
+
+            if (object.common.type === "boolean") {
+                cloudValue = state.val ? 1 : 0;
+            }
+
+            this.log.info(
+                `Cloud command started: ${cloudPath.join(".")} = ${JSON.stringify(cloudValue)}`,
             );
 
             await this.cloud.updatePoolField(
                 object.native.poolId,
                 cloudPath,
-                state.val,
+                cloudValue,
             );
 
             await this.setStateAsync(id, state.val, true);
 
             this.log.info(
-                `Cloud value updated: ${id} = ${JSON.stringify(state.val)}`,
+                `Cloud command accepted: ${cloudPath.join(".")} = ${JSON.stringify(cloudValue)}`,
             );
 
-            await this.pollingService?.pollNow();
+            this.schedulePollAfterWrite();
         } catch (error) {
             this.log.error(
                 `Could not write ${id}: ${(error as Error).message}`,
             );
         }
+    }
+
+    private schedulePollAfterWrite(): void {
+        if (this.delayedPollTimer) {
+            clearTimeout(this.delayedPollTimer);
+            this.log.debug("Delayed polling rescheduled.");
+        } else {
+            this.log.debug("Delayed polling scheduled in 5 seconds.");
+        }
+
+        this.delayedPollTimer = setTimeout(() => {
+            this.delayedPollTimer = null;
+            this.log.debug("Starting delayed polling after cloud write.");
+            void this.pollingService?.pollNow();
+        }, WRITE_POLL_DELAY_MS);
     }
 
     private getPollingIntervalSeconds(): number {
@@ -244,11 +205,19 @@ class Kripsol extends utils.Adapter {
 
         return Math.min(
             MAX_POLLING_INTERVAL_SECONDS,
-            Math.max(MIN_POLLING_INTERVAL_SECONDS, Math.round(configured)),
+            Math.max(
+                MIN_POLLING_INTERVAL_SECONDS,
+                Math.round(configured),
+            ),
         );
     }
 
     private onUnload(callback: () => void): void {
+        if (this.delayedPollTimer) {
+            clearTimeout(this.delayedPollTimer);
+            this.delayedPollTimer = null;
+        }
+
         this.pollingService?.stop();
         this.pollingService = null;
         this.stateWriter = null;
@@ -260,8 +229,9 @@ class Kripsol extends utils.Adapter {
 }
 
 if (require.main !== module) {
-    module.exports = (options: Partial<utils.AdapterOptions> | undefined) =>
-        new Kripsol(options);
+    module.exports = (
+        options: Partial<utils.AdapterOptions> | undefined,
+    ) => new Kripsol(options);
 } else {
     (() => new Kripsol())();
 }

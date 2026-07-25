@@ -40,8 +40,6 @@ class PollingService {
       return;
     }
     this.stopped = false;
-    await this.adapter.setStateAsync("info.pollingActive", true, true);
-    await this.adapter.setStateAsync("info.lastError", "", true);
     await this.poll();
   }
   stop() {
@@ -50,7 +48,9 @@ class PollingService {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    void this.adapter.setStateAsync("info.pollingActive", false, true);
+    for (const pool of this.pools) {
+      void this.setPoolInfo(pool, "pollingActive", false);
+    }
     this.adapter.log.info("Polling stopped.");
   }
   async pollNow() {
@@ -72,7 +72,6 @@ class PollingService {
       return;
     }
     this.running = true;
-    await this.adapter.setStateAsync("info.lastPoll", Date.now(), true);
     try {
       if (this.pools.length === 0) {
         this.pools = await this.cloud.getPools();
@@ -81,31 +80,61 @@ class PollingService {
             "Authentication succeeded, but no pools are assigned to this account."
           );
         }
+        for (const pool of this.pools) {
+          await this.stateWriter.ensurePoolInfoObjects(pool);
+          await this.setPoolInfo(pool, "pollingActive", true);
+          await this.setPoolInfo(pool, "lastError", "");
+        }
       }
+      let successfulPools = 0;
       for (const pool of this.pools) {
-        const poolData = await this.cloud.fetchPoolData(pool.id);
-        const changedStateCount = await this.stateWriter.writePool(pool, poolData);
-        this.adapter.log.debug(
-          `Polling completed for pool "${pool.name}". ${changedStateCount} changed state(s).`
-        );
+        const startTime = Date.now();
+        await this.setPoolInfo(pool, "lastPoll", startTime);
+        try {
+          const poolData = await this.cloud.fetchPoolData(pool.id);
+          const changedStateCount = await this.stateWriter.writePool(pool, poolData);
+          const duration = Date.now() - startTime;
+          await this.setPoolInfo(
+            pool,
+            "lastSuccessfulPoll",
+            Date.now()
+          );
+          await this.setPoolInfo(pool, "lastError", "");
+          await this.setPoolInfo(pool, "pollDuration", duration);
+          await this.setPoolInfo(pool, "pollingActive", true);
+          successfulPools++;
+          this.adapter.log.debug(
+            `Polling completed for pool "${pool.name}" in ${duration} ms. ${changedStateCount} changed state(s).`
+          );
+        } catch (error) {
+          const duration = Date.now() - startTime;
+          const message = error instanceof Error ? error.message : String(error);
+          await this.setPoolInfo(pool, "lastError", message);
+          await this.setPoolInfo(pool, "pollDuration", duration);
+          await this.setPoolInfo(pool, "pollingActive", true);
+          this.adapter.log.error(
+            `Polling failed for pool "${pool.name}": ${message}`
+          );
+        }
       }
-      this.consecutiveErrors = 0;
-      await this.adapter.setStateAsync("info.connection", true, true);
-      await this.adapter.setStateAsync(
-        "info.lastSuccessfulPoll",
-        Date.now(),
-        true
-      );
-      await this.adapter.setStateAsync("info.lastError", "", true);
-      this.scheduleNext(this.intervalMs);
+      if (successfulPools > 0) {
+        this.consecutiveErrors = 0;
+        await this.adapter.setStateAsync(
+          "info.connection",
+          true,
+          true
+        );
+        this.scheduleNext(this.intervalMs);
+      } else {
+        throw new Error("Polling failed for all configured pools.");
+      }
     } catch (error) {
       this.consecutiveErrors++;
       this.pools = [];
       const message = error instanceof Error ? error.message : String(error);
-      await this.adapter.setStateAsync("info.connection", false, true);
       await this.adapter.setStateAsync(
-        "info.lastError",
-        message,
+        "info.connection",
+        false,
         true
       );
       this.adapter.log.error(`Polling failed: ${message}`);
@@ -130,6 +159,18 @@ class PollingService {
     } finally {
       this.running = false;
     }
+  }
+  async setPoolInfo(pool, name, value) {
+    const poolId = this.sanitizeIdPart(pool.id);
+    await this.adapter.setStateAsync(
+      `pools.${poolId}.Info.${name}`,
+      value,
+      true
+    );
+  }
+  sanitizeIdPart(value) {
+    const sanitized = value.trim().replace(/[.\s*,;'"`<>\\?[\]{}=+~!#$%^&()|/]+/g, "_").replace(/^_+|_+$/g, "");
+    return sanitized || "unbenannt";
   }
   scheduleNext(delayMs) {
     if (this.stopped) {
