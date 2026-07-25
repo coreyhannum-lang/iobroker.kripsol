@@ -3,6 +3,10 @@ const FIRESTORE_BASE =
     `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT}` +
     "/databases/(default)/documents";
 
+const COMMAND_ENDPOINT =
+    "https://europe-west1-hayward-europe.cloudfunctions.net/sendPoolCommand";
+const COMMAND_TIMEOUT_MS = 20_000;
+
 type FirestoreValue = {
     nullValue?: null;
     booleanValue?: boolean;
@@ -39,6 +43,11 @@ interface FirestoreErrorResponse {
     };
 }
 
+interface CommandErrorResponse {
+    error?: string | { message?: string };
+    message?: string;
+}
+
 export interface KripsolPool {
     id: string;
     name: string;
@@ -59,6 +68,11 @@ export interface KripsolTokenProvider {
 }
 
 export class KripsolCloud {
+    private readonly poolDataCache = new Map<
+        string,
+        Record<string, unknown>
+    >();
+
     public constructor(private readonly auth: KripsolTokenProvider) {}
 
     public async getPools(): Promise<KripsolPool[]> {
@@ -74,6 +88,8 @@ export class KripsolCloud {
                 `pools/${encodeURIComponent(poolId)}`,
             );
 
+            this.poolDataCache.set(poolId, poolDocument);
+
             pools.push({
                 id: poolId,
                 name: this.getPoolName(poolDocument),
@@ -86,7 +102,12 @@ export class KripsolCloud {
     public async fetchPoolData(
         poolId: string,
     ): Promise<Record<string, unknown>> {
-        return this.getDocument(`pools/${encodeURIComponent(poolId)}`);
+        const data = await this.getDocument(
+            `pools/${encodeURIComponent(poolId)}`,
+        );
+
+        this.poolDataCache.set(poolId, data);
+        return data;
     }
 
     public async updatePoolField(
@@ -98,52 +119,174 @@ export class KripsolCloud {
             throw new KripsolCloudError("Cloud field path is empty.");
         }
 
-        const tokens = await this.auth.getValidTokens();
-        const firestorePath = fieldPath
-            .map((part) => this.escapeFieldPathPart(part))
-            .join(".");
+        let poolData = this.poolDataCache.get(poolId);
 
-        const query = new URLSearchParams();
-        query.append("updateMask.fieldPaths", firestorePath);
+        if (!poolData) {
+            poolData = await this.fetchPoolData(poolId);
+        }
 
-        const nestedFields = this.buildNestedFields(
+        const gateway = this.readGatewayId(poolData, poolId);
+        const changes = this.createCommandChanges(
+            poolData,
             fieldPath,
-            this.encodeValue(value),
+            value,
+        );
+        const tokens = await this.auth.getValidTokens();
+        const controller = new AbortController();
+        const timeout = setTimeout(
+            () => controller.abort(),
+            COMMAND_TIMEOUT_MS,
         );
 
-        const response = await fetch(
-            `${FIRESTORE_BASE}/pools/${encodeURIComponent(poolId)}?${query.toString()}`,
-            {
-                method: "PATCH",
+        let response: Response;
+
+        try {
+            response = await fetch(COMMAND_ENDPOINT, {
+                method: "POST",
                 headers: {
                     Authorization: `Bearer ${tokens.idToken}`,
                     Accept: "application/json",
                     "Content-Type": "application/json; charset=UTF-8",
                 },
                 body: JSON.stringify({
-                    fields: nestedFields,
+                    gateway,
+                    poolId,
+                    operation: "WRP",
+                    changes: JSON.stringify(changes),
+                    source: "web",
                 }),
-            },
-        );
-
-        if (!response.ok) {
-            const text = await response.text();
-            let message = text;
-
-            try {
-                const payload = JSON.parse(text) as FirestoreErrorResponse;
-                message =
-                    payload.error?.message ??
-                    payload.error?.status ??
-                    text;
-            } catch {
-                // Keep raw response text.
+                signal: controller.signal,
+            });
+        } catch (error) {
+            if ((error as Error).name === "AbortError") {
+                throw new KripsolCloudError(
+                    `Cloud command timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
+                );
             }
 
             throw new KripsolCloudError(
-                `Cloud write failed for ${firestorePath} ` +
-                    `(HTTP ${response.status}): ${message || "Unknown error"}`,
+                `Cloud command transport error: ${(error as Error).message}`,
             );
+        } finally {
+            clearTimeout(timeout);
+        }
+
+        const responseText = await response.text();
+
+        if (!response.ok) {
+            throw new KripsolCloudError(
+                `Cloud command failed for ${fieldPath.join(".")} ` +
+                    `(HTTP ${response.status}): ` +
+                    `${this.readCommandError(responseText)}`,
+            );
+        }
+
+        this.setNestedValue(poolData, fieldPath, value);
+    }
+
+    private readGatewayId(
+        poolData: Record<string, unknown>,
+        poolId: string,
+    ): string | number {
+        const candidates = [
+            poolData.wifi,
+            poolData.gateway,
+            poolData.gatewayId,
+        ];
+
+        for (const candidate of candidates) {
+            if (
+                (typeof candidate === "string" &&
+                    candidate.trim().length > 0) ||
+                typeof candidate === "number"
+            ) {
+                return candidate;
+            }
+        }
+
+        throw new KripsolCloudError(
+            `Pool ${poolId} does not contain a valid gateway ID.`,
+        );
+    }
+
+    private createCommandChanges(
+        poolData: Record<string, unknown>,
+        fieldPath: string[],
+        value: ioBroker.StateValue,
+    ): Record<string, unknown> {
+        const rootKey = fieldPath[0];
+
+        if (!rootKey) {
+            throw new KripsolCloudError("Cloud field path is empty.");
+        }
+
+        const currentRoot = poolData[rootKey];
+        const changes: Record<string, unknown> = {
+            [rootKey]: this.cloneJsonValue(currentRoot ?? {}),
+        };
+
+        this.setNestedValue(changes, fieldPath, value);
+        return changes;
+    }
+
+    private setNestedValue(
+        target: Record<string, unknown>,
+        fieldPath: string[],
+        value: ioBroker.StateValue,
+    ): void {
+        let current = target;
+
+        for (const key of fieldPath.slice(0, -1)) {
+            const existing = this.asRecord(current[key]);
+
+            if (existing) {
+                current = existing;
+                continue;
+            }
+
+            const created: Record<string, unknown> = {};
+            current[key] = created;
+            current = created;
+        }
+
+        const leaf = fieldPath[fieldPath.length - 1];
+
+        if (!leaf) {
+            throw new KripsolCloudError("Cloud field path is empty.");
+        }
+
+        current[leaf] = value;
+    }
+
+    private cloneJsonValue(value: unknown): unknown {
+        if (value === undefined) {
+            return {};
+        }
+
+        return JSON.parse(JSON.stringify(value)) as unknown;
+    }
+
+    private readCommandError(responseText: string): string {
+        if (!responseText) {
+            return "Unknown error";
+        }
+
+        try {
+            const payload = JSON.parse(
+                responseText,
+            ) as CommandErrorResponse;
+
+            if (typeof payload.error === "string") {
+                return payload.error;
+            }
+
+            return (
+                payload.error?.message ??
+                payload.message ??
+                responseText
+            );
+        } catch {
+            return responseText;
         }
     }
 
@@ -151,7 +294,6 @@ export class KripsolCloud {
         path: string,
     ): Promise<Record<string, unknown>> {
         const tokens = await this.auth.getValidTokens();
-
         const response = await fetch(`${FIRESTORE_BASE}/${path}`, {
             method: "GET",
             headers: {
@@ -183,65 +325,6 @@ export class KripsolCloud {
 
         const document = payload as FirestoreDocument;
         return this.decodeFields(document.fields ?? {});
-    }
-
-    private buildNestedFields(
-        path: string[],
-        leafValue: FirestoreValue,
-    ): Record<string, FirestoreValue> {
-        const [head, ...tail] = path;
-
-        if (!head) {
-            return {};
-        }
-
-        if (tail.length === 0) {
-            return {
-                [head]: leafValue,
-            };
-        }
-
-        return {
-            [head]: {
-                mapValue: {
-                    fields: this.buildNestedFields(tail, leafValue),
-                },
-            },
-        };
-    }
-
-    private encodeValue(value: ioBroker.StateValue): FirestoreValue {
-        if (value === null) {
-            return { nullValue: null };
-        }
-
-        if (typeof value === "boolean") {
-            return { booleanValue: value };
-        }
-
-        if (typeof value === "number") {
-            if (Number.isInteger(value)) {
-                return { integerValue: String(value) };
-            }
-
-            return { doubleValue: value };
-        }
-
-        if (typeof value === "string") {
-            return { stringValue: value };
-        }
-
-        throw new KripsolCloudError(
-            `Unsupported cloud value type: ${typeof value}`,
-        );
-    }
-
-    private escapeFieldPathPart(part: string): string {
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
-            return part;
-        }
-
-        return `\`${part.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
     }
 
     private decodeFields(
